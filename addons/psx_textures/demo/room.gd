@@ -2,11 +2,13 @@ extends Node
 ## A room to try the pack's textures in: floor, walls, a trim along their foot, ceiling, a door with
 ## a sign over it, two windows and decals, each surface cycled through the textures that fit it,
 ## or all of them set at once from textures.json's "sets". With PSX Look installed
-## (res://addons/psx_look/), it shows through it.
+## (res://addons/psx_look/), it shows through it; with the addon's 3-point filter
+## (three_point/, Retro 64 Textures'), through that.
 ## Keys: up / down (or 1 to 7) pick a surface, left / right its texture, Space the next set,
-## X the decals, P PSX Look; WASD to walk, drag to look, Shift to hurry.
+## X the decals, P PSX Look, F the 3-point filter; WASD to walk, drag to look, Shift to hurry.
 
 const PSX_LOOK := "res://addons/psx_look/"
+const THREE_POINT := "/three_point/three_point.gd"
 const W := 4.5  # the room, x -2.25..2.25, z -3..3, a metre a tile
 const D := 6.0
 const H := 2.7
@@ -20,6 +22,7 @@ const SURFACES := ["floor", "wall", "trim", "ceiling", "door", "window", "sign"]
 var dir: String
 var textures: Array
 var sets: Dictionary
+var density := 128.0  # px a metre
 var set_names: Array
 var set_index := -1
 var chosen := {}  # surface -> texture name, "" for none
@@ -34,11 +37,14 @@ var yaw := 0.0
 var pitch := -0.08
 var psx_screen: Control
 var psx_on := false
+var three_point: Script
+var filter_on := false
 var ui := CanvasLayer.new()
 var swatch := TextureRect.new()
 var title := Label.new()
 var info := Label.new()
 var psx_button := Button.new()
+var filter_button := Button.new()
 
 
 func _ready() -> void:
@@ -46,7 +52,10 @@ func _ready() -> void:
 	var data: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(dir + "/textures.json"))
 	textures = data["textures"]
 	sets = data.get("sets", {})
+	density = data.get("density", 128.0)
 	set_names = sets.keys()
+	if ResourceLoader.exists(dir + THREE_POINT):
+		three_point = load(dir + THREE_POINT)
 	add_child(world)
 	_stage()
 	world.add_child(decals)
@@ -164,7 +173,8 @@ func texture(name: String) -> Dictionary:
 
 
 ## Dresses the room as textures.json's set `name`: a texture per surface ("" or none for none; no
-## ceiling is the open sky), "decals" as [texture, surface, at, metres wide] and a "light" colour.
+## ceiling is the open sky), "decals" as [texture, surface, at, metres wide], a "light" colour,
+## and the open sky's colour ("sky") and the ambient light's energy ("ambient") if not the dark's.
 ## A decal is on the floor or ceiling at [x, z], on the back wall at [x, height], on the left or
 ## right at [z, height].
 func show_set(name: String) -> void:
@@ -181,7 +191,10 @@ func show_set(name: String) -> void:
 			_decal(d[0], d[1], Vector2(d[2][0], d[2][1]), d[3], i)
 	lamp.light_color = Color(s.get("light", "ffffff"))
 	env.ambient_light_color = lamp.light_color.lerp(Color(0.6, 0.6, 0.7), 0.5)
-	env.background_color = Color(0.05, 0.06, 0.1) if chosen["ceiling"] == "" else Color(0.02, 0.02, 0.04)
+	env.ambient_light_energy = s.get("ambient", 0.5)
+	var sky := Color(s.get("sky", "0d0f1a"))
+	env.background_color = sky if chosen["ceiling"] == "" else Color(0.02, 0.02, 0.04)
+	env.fog_light_color = sky if s.has("sky") else Color(0.02, 0.02, 0.03)
 	_refresh()
 
 
@@ -223,7 +236,7 @@ func _refresh() -> void:
 	var sign: String = chosen["sign"]
 	if sign != "":
 		var t := texture(sign)
-		var wh := Vector2(t["size"][0], t["size"][1]) / 128.0
+		var wh := Vector2(t["size"][0], t["size"][1]) / density
 		var q := _quad(Vector3(-wh.x / 2, 2.06 + wh.y, -D / 2 + 0.01), Vector3(wh.x, 0, 0), Vector3(0, -wh.y, 0), Vector2.ONE)
 		meshes["sign"][0].mesh = q
 	lamp.position.y = H - 0.4 if chosen["ceiling"] != "" else 4.5
@@ -231,7 +244,8 @@ func _refresh() -> void:
 
 
 func _paint(mi: MeshInstance3D) -> void:
-	mi.material_override = mi.get_meta("source")
+	var m: StandardMaterial3D = mi.get_meta("source")
+	mi.material_override = three_point.material(m) if filter_on else m
 	if psx_on:
 		load(PSX_LOOK + "psx.gd").convert(mi)
 
@@ -247,6 +261,16 @@ func set_psx(on: bool) -> void:
 	else:
 		add_child(world)
 	psx_screen.visible = on
+	for mi in world.find_children("*", "MeshInstance3D", true, false):
+		if mi.has_meta("source"):
+			_paint(mi)
+
+
+func set_filter(on: bool) -> void:
+	if not three_point:
+		return
+	filter_on = on
+	filter_button.set_pressed_no_signal(on)
 	for mi in world.find_children("*", "MeshInstance3D", true, false):
 		if mi.has_meta("source"):
 			_paint(mi)
@@ -319,8 +343,15 @@ func _ui() -> void:
 	psx_button.focus_mode = Control.FOCUS_NONE
 	psx_button.toggled.connect(set_psx)
 	bar.add_child(psx_button)
+	filter_button.text = "3-point filter"
+	filter_button.toggle_mode = true
+	filter_button.focus_mode = Control.FOCUS_NONE
+	filter_button.toggled.connect(set_filter)
+	filter_button.visible = three_point != null
+	bar.add_child(filter_button)
 	var hint := Label.new()
-	hint.text = "WASD to walk, drag to look\nup / down: surface, left / right: texture\nspace: next set, X: decals, P: PSX Look"
+	hint.text = "WASD to walk, drag to look\nup / down: surface, left / right: texture\nspace: next set, X: decals, " \
+		+ ("F: 3-point filter" if three_point else "P: PSX Look")
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	hint.add_theme_font_size_override("font_size", 13)
 	hint.modulate = Color(1, 1, 1, 0.55)
@@ -388,6 +419,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_P:
 				if not event.echo:
 					set_psx(not psx_on)
+			KEY_F:
+				if not event.echo:
+					set_filter(not filter_on)
 			_:
 				var n: int = event.keycode - KEY_1
 				if n >= 0 and n < SURFACES.size():

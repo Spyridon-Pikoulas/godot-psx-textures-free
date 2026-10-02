@@ -226,5 +226,7 @@
    "light": "c0d8ff",
    "decals": []
   }
- }
+ },
+ "density": 128,
+ "filter": "nearest"
 }
